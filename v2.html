@@ -1,0 +1,814 @@
+<!DOCTYPE html>
+<html lang="zh-TW" class="h-full">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>活動追蹤器與任務管理器</title>
+    <link rel="icon" type="image/svg+xml" href="favicon.svg">
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- FontAwesome for Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Google Fonts: Rajdhani (UI text) + Orbitron (HUD display / numerals) -->
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Rajdhani:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Rajdhani', 'Inter', 'sans-serif'],
+                        display: ['Orbitron', 'sans-serif'],
+                    },
+                }
+            }
+        }
+    </script>
+    <style>
+        body {
+            background-color: #050810;
+            background-image:
+                linear-gradient(rgba(34, 211, 238, 0.07) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(34, 211, 238, 0.07) 1px, transparent 1px);
+            background-size: 36px 36px;
+        }
+        .hud-scanlines {
+            position: fixed;
+            inset: 0;
+            pointer-events: none;
+            z-index: 30;
+            background: repeating-linear-gradient(to bottom, rgba(34, 211, 238, 0.035) 0px, rgba(34, 211, 238, 0.035) 1px, transparent 2px, transparent 4px);
+        }
+        @keyframes hud-sweep {
+            0% { transform: translateY(-20%); opacity: 0; }
+            10% { opacity: 1; }
+            90% { opacity: 1; }
+            100% { transform: translateY(120%); opacity: 0; }
+        }
+        .hud-sweep-line {
+            animation: hud-sweep 7s linear infinite;
+        }
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: rgba(8, 15, 25, 0.4); }
+        ::-webkit-scrollbar-thumb { background: rgba(34, 211, 238, 0.35); border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: rgba(34, 211, 238, 0.6); }
+
+        /* 視窗高 200px：右側 76%（152px）、左側 100%，斜切落差 48px */
+        .cockpit-slice {
+            clip-path: polygon(0% 0%, 100% 0%, 100% 76%, 0% 100%);
+        }
+        /* 任務區沿同一條斜線切齊，留 6px 縫給發光線 */
+        .cockpit-under {
+            clip-path: polygon(0 54px, 100% 6px, 100% 100%, 0 100%);
+        }
+
+        .starfield {
+            background-color: #050810;
+            background-image:
+                radial-gradient(1px 1px at 10% 20%, #fff, transparent),
+                radial-gradient(1px 1px at 25% 65%, #fff, transparent),
+                radial-gradient(1px 1px at 40% 15%, #fff, transparent),
+                radial-gradient(1px 1px at 55% 40%, #fff, transparent),
+                radial-gradient(1px 1px at 65% 75%, #fff, transparent),
+                radial-gradient(1px 1px at 80% 25%, #fff, transparent),
+                radial-gradient(1px 1px at 90% 60%, #fff, transparent),
+                radial-gradient(1px 1px at 15% 85%, #fff, transparent),
+                radial-gradient(1px 1px at 48% 85%, #fff, transparent),
+                radial-gradient(1px 1px at 70% 10%, #fff, transparent),
+                radial-gradient(1px 1px at 33% 45%, #fff, transparent),
+                radial-gradient(1px 1px at 95% 85%, #fff, transparent);
+        }
+        @keyframes star-twinkle {
+            0%, 100% { opacity: 0.25; }
+            50% { opacity: 0.9; }
+        }
+        .star-twinkle-layer {
+            animation: star-twinkle 4s ease-in-out infinite;
+        }
+    </style>
+</head>
+<body class="h-full text-slate-100 flex flex-col antialiased overflow-hidden font-sans relative">
+
+    <div class="hud-scanlines"></div>
+    <div class="fixed left-0 right-0 h-32 bg-gradient-to-b from-transparent via-cyan-400/5 to-transparent hud-sweep-line pointer-events-none z-30"></div>
+
+    <!-- 潛艇／駕駛艙：四片窗格＋粗支柱，窗底為一條向上拱的弧線，弧線下方是操作台 -->
+    <section class="relative shrink-0 h-[232px] z-20">
+        <div class="absolute inset-0 starfield overflow-hidden">
+            <div class="absolute inset-0 star-twinkle-layer" style="background-image:
+                radial-gradient(1.5px 1.5px at 8% 22%, #fff, transparent),
+                radial-gradient(1.5px 1.5px at 20% 48%, #fff, transparent),
+                radial-gradient(1.5px 1.5px at 31% 30%, #fff, transparent),
+                radial-gradient(1.5px 1.5px at 44% 55%, #fff, transparent),
+                radial-gradient(1.5px 1.5px at 57% 26%, #fff, transparent),
+                radial-gradient(1.5px 1.5px at 69% 50%, #fff, transparent),
+                radial-gradient(1.5px 1.5px at 81% 34%, #fff, transparent),
+                radial-gradient(1.5px 1.5px at 93% 52%, #fff, transparent);"></div>
+            <div class="absolute inset-0" style="background: radial-gradient(ellipse at 50% 45%, rgba(34,211,238,0.10), transparent 60%);"></div>
+
+            <!-- 星球 -->
+            <div class="absolute left-[6%] top-[22%] w-10 h-10 rounded-full" style="background: radial-gradient(circle at 32% 30%, #fcd9a8, #c2703a 55%, #3b1d0c); box-shadow: 0 0 16px 2px rgba(251,146,60,0.25);"></div>
+            <div class="absolute left-[31%] top-[40%] w-7 h-7 rounded-full" style="background: radial-gradient(circle at 32% 30%, #a7f3d0, #0f766e 60%, #022c22); box-shadow: 0 0 12px 2px rgba(45,212,191,0.25);"></div>
+            <div class="absolute left-[62%] top-[14%] w-16 h-16">
+                <div class="absolute inset-0 rounded-full" style="background: radial-gradient(circle at 30% 28%, #c4b5fd, #5b21b6 58%, #1e1b4b); box-shadow: 0 0 24px 4px rgba(139,92,246,0.3);"></div>
+                <div class="absolute left-1/2 top-1/2 w-[150%] h-[34%] rounded-full" style="transform: translate(-50%, -50%) rotate(-18deg); border: 2px solid rgba(196,181,253,0.55); box-shadow: 0 0 8px rgba(196,181,253,0.3);"></div>
+            </div>
+            <div class="absolute left-[90%] top-[30%] w-5 h-5 rounded-full" style="background: radial-gradient(circle at 32% 30%, #f1f5f9, #64748b 60%, #1e293b);"></div>
+        </div>
+
+        <svg viewBox="0 0 1000 300" preserveAspectRatio="none" role="img" aria-label="駕駛艙窗框與操作台弧線" class="absolute inset-0 w-full h-full pointer-events-none">
+            <defs>
+                <linearGradient id="frameGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0" stop-color="#2a3647"/>
+                    <stop offset="1" stop-color="#0b1220"/>
+                </linearGradient>
+                <linearGradient id="consoleGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0" stop-color="#1c2635"/>
+                    <stop offset="1" stop-color="#070b14"/>
+                </linearGradient>
+            </defs>
+
+            <!-- 窗框：外框減去四片窗格（evenodd 留出玻璃） -->
+            <path fill="url(#frameGrad)" fill-rule="evenodd" d="M0,0H1000V300H0Z
+                M0,12 L186,12 L206,252 L0,216 Z
+                M214,12 L488,12 L488,240 L230,254 Z
+                M512,12 L786,12 L770,254 L512,240 Z
+                M814,12 L1000,12 L1000,216 L794,252 Z"/>
+
+            <!-- 玻璃邊緣細亮線 -->
+            <g fill="none" stroke="#22d3ee" stroke-width="1.5" vector-effect="non-scaling-stroke" opacity="0.35">
+                <path vector-effect="non-scaling-stroke" d="M0,12 L186,12 L206,252 L0,216"/>
+                <path vector-effect="non-scaling-stroke" d="M214,12 L488,12 L488,240 L230,254 Z"/>
+                <path vector-effect="non-scaling-stroke" d="M512,12 L786,12 L770,254 L512,240 Z"/>
+                <path vector-effect="non-scaling-stroke" d="M814,12 L1000,12 L1000,216 L794,252"/>
+            </g>
+
+            <!-- 頂部中央面板 -->
+            <path d="M430,0 L570,0 L556,12 L444,12 Z" fill="#3a475a" stroke="#22d3ee" stroke-width="1" vector-effect="non-scaling-stroke" opacity="0.8"/>
+
+            <!-- 操作台：向上拱起的弧形，分隔窗戶與操作區 -->
+            <path fill="url(#consoleGrad)" d="M0,300 L0,236 Q500,196 1000,236 L1000,300 Z"/>
+            <path d="M0,236 Q500,196 1000,236" fill="none" stroke="#22d3ee" stroke-width="14" vector-effect="non-scaling-stroke" opacity="0.14"/>
+            <path d="M0,236 Q500,196 1000,236" fill="none" stroke="#67e8f9" stroke-width="2.5" vector-effect="non-scaling-stroke" opacity="0.95"/>
+        </svg>
+
+        <span class="absolute top-2 left-3 w-4 h-4 border-t-2 border-l-2 border-cyan-400/70"></span>
+        <span class="absolute top-2 right-3 w-4 h-4 border-t-2 border-r-2 border-cyan-400/70"></span>
+
+        <!-- 操作台上的標題／計數列 -->
+        <div class="absolute bottom-0 left-0 right-0 h-[50px] px-6 flex items-center justify-between gap-3">
+            <div class="flex items-center space-x-2.5 min-w-0">
+                <div class="bg-cyan-500/10 text-cyan-300 border border-cyan-400/60 p-1.5 shadow-[0_0_15px_-2px_rgba(34,211,238,0.6)] flex items-center justify-center shrink-0">
+                    <i class="fa-solid fa-list-check text-sm"></i>
+                </div>
+                <div class="min-w-0">
+                    <h1 class="font-display text-sm sm:text-base font-bold tracking-wider text-cyan-50 truncate" style="text-shadow:0 0 12px rgba(34,211,238,0.55), 0 0 2px rgba(255,255,255,0.4);">TASKFLOW <span class="text-cyan-400">活動追蹤器</span></h1>
+                    <p class="text-[9px] sm:text-[10px] text-cyan-400/60 tracking-wide uppercase font-display truncate hidden sm:block">// 以步驟為基礎的進度追蹤與活動管理</p>
+                </div>
+            </div>
+            <div class="flex items-center gap-2 shrink-0">
+                <div class="flex items-center space-x-1.5 bg-black/40 px-2.5 py-1.5 border border-amber-400/40 text-xs font-display">
+                    <span class="w-2 h-2 rounded-full bg-amber-400 shadow-[0_0_8px_2px_rgba(251,191,36,0.7)] animate-pulse"></span>
+                    <span id="pending-count" class="font-medium text-amber-200 tracking-wide">0 待處理</span>
+                </div>
+                <div class="flex items-center space-x-1.5 bg-black/40 px-2.5 py-1.5 border border-emerald-400/40 text-xs font-display">
+                    <span class="w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_8px_2px_rgba(52,211,153,0.7)] animate-pulse"></span>
+                    <span id="completed-count" class="font-medium text-emerald-200 tracking-wide">0 已完成</span>
+                </div>
+                <button onclick="app.resetData()" title="重置範例資料" class="text-cyan-400/70 hover:text-cyan-200 text-xs px-2.5 py-1.5 border border-cyan-500/30 hover:border-cyan-400/70 bg-black/40 hover:bg-cyan-500/10 transition font-display tracking-wide">
+                    <i class="fa-solid fa-rotate-right"></i>
+                </button>
+            </div>
+        </div>
+    </section>
+
+
+    <main class="relative flex-1 overflow-hidden grid grid-cols-1 lg:grid-cols-2 gap-6 p-6 pb-24 z-0">
+
+        <!-- 左欄：待處理任務 -->
+        <section class="relative bg-black/50 backdrop-blur border border-cyan-500/20 flex flex-col shadow-[0_0_30px_-10px_rgba(34,211,238,0.3)] overflow-hidden">
+            <span class="absolute top-0 left-0 w-3 h-3 border-t-2 border-l-2 border-amber-400/70 z-10"></span>
+            <span class="absolute bottom-0 right-0 w-3 h-3 border-b-2 border-r-2 border-amber-400/70 z-10"></span>
+            <div class="bg-black/40 px-5 py-3 border-b border-amber-500/20 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
+                <div class="flex items-center space-x-2">
+                    <div class="w-2 h-5 bg-amber-500 shadow-[0_0_8px_1px_rgba(251,191,36,0.6)]"></div>
+                    <h2 class="font-display font-semibold text-amber-200 tracking-[0.15em] uppercase text-sm">待處理活動</h2>
+                    <span id="pending-badge" class="bg-amber-500/10 text-amber-300 border border-amber-500/40 text-xs px-2 py-0.5 font-display font-medium ml-2">0</span>
+                </div>
+                <div class="flex items-center space-x-2 text-xs">
+                    <span class="text-cyan-400/60 font-display tracking-wide">排序方式：</span>
+                    <select id="pending-sort-select" onchange="app.setPendingSort(this.value)" class="bg-black/60 border border-cyan-500/30 text-cyan-200 px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-cyan-400 font-display">
+                        <option value="default">預設／自訂</option>
+                        <option value="priority-desc">優先度（高到低）</option>
+                        <option value="due-date">到期日（最早）</option>
+                        <option value="progress-desc">進度（最高）</option>
+                    </select>
+                </div>
+            </div>
+            <div id="pending-list" class="flex-1 overflow-y-auto p-4 space-y-3.5 custom-scrollbar">
+                <!-- 動態產生的待處理任務 -->
+            </div>
+        </section>
+
+        <!-- 右欄：已完成任務 -->
+        <section class="relative bg-black/50 backdrop-blur border border-cyan-500/20 flex flex-col shadow-[0_0_30px_-10px_rgba(34,211,238,0.3)] overflow-hidden">
+            <span class="absolute top-0 left-0 w-3 h-3 border-t-2 border-l-2 border-emerald-400/70 z-10"></span>
+            <span class="absolute bottom-0 right-0 w-3 h-3 border-b-2 border-r-2 border-emerald-400/70 z-10"></span>
+            <div class="bg-black/40 px-5 py-4 border-b border-emerald-500/20 flex items-center justify-between">
+                <div class="flex items-center space-x-2">
+                    <div class="w-2 h-5 bg-emerald-500 shadow-[0_0_8px_1px_rgba(52,211,153,0.6)]"></div>
+                    <h2 class="font-display font-semibold text-emerald-200 tracking-[0.15em] uppercase text-sm">已完成活動</h2>
+                </div>
+                <span id="completed-badge" class="bg-emerald-500/10 text-emerald-300 border border-emerald-500/40 text-xs px-2.5 py-0.5 font-display font-medium">0</span>
+            </div>
+            <div id="completed-list" class="flex-1 overflow-y-auto p-4 space-y-3.5 custom-scrollbar">
+                <!-- 動態產生的已完成任務 -->
+            </div>
+        </section>
+
+    </main>
+
+    <footer class="absolute bottom-0 left-0 right-0 bg-black/70 backdrop-blur border-t border-cyan-500/30 p-4 shadow-[0_-4px_30px_-10px_rgba(34,211,238,0.4)] z-10">
+        <!-- 收合狀態：只有新增任務按鈕 -->
+        <div id="add-task-trigger-wrap" class="flex justify-end px-2">
+            <button type="button" onclick="app.openAddForm()" class="bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-400/60 text-cyan-200 font-medium px-6 py-2.5 text-sm transition shadow-[0_0_15px_-3px_rgba(34,211,238,0.6)] flex items-center justify-center space-x-2 font-display tracking-wide">
+                <i class="fa-solid fa-plus text-xs"></i>
+                <span>新增任務</span>
+            </button>
+        </div>
+
+        <!-- 展開狀態：完整表單（取代按鈕原本的位置） -->
+        <form id="add-task-form" onsubmit="app.handleAddTask(event)" class="hidden max-w-7xl mx-auto flex flex-col sm:flex-row items-center gap-3">
+            <div class="relative flex-1 w-full">
+                <div class="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-cyan-400/60">
+                    <i class="fa-solid fa-plus"></i>
+                </div>
+                <input type="text" id="new-task-title" placeholder="需要做什麼？（例如：洗碗）"
+                    class="w-full pl-10 pr-4 py-2.5 bg-black/60 border border-cyan-500/30 text-slate-100 placeholder-cyan-500/30 text-sm focus:outline-none focus:ring-1 focus:ring-cyan-400 focus:border-cyan-400 transition">
+            </div>
+            <div class="flex items-center space-x-3 w-full sm:w-auto">
+                <select id="new-task-priority" class="bg-black/60 border border-cyan-500/30 text-slate-300 text-sm px-3 py-2.5 focus:outline-none focus:ring-1 focus:ring-cyan-400">
+                    <option value="low">低優先度</option>
+                    <option value="medium" selected>中優先度</option>
+                    <option value="high">高優先度</option>
+                </select>
+                <input type="date" id="new-task-due" class="bg-black/60 border border-cyan-500/30 text-slate-300 text-sm px-3 py-2 focus:outline-none focus:ring-1 focus:ring-cyan-400">
+                <button type="submit" class="w-full sm:w-auto bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-400/60 text-cyan-200 font-medium px-5 py-2.5 text-sm transition shadow-[0_0_15px_-3px_rgba(34,211,238,0.6)] flex items-center justify-center space-x-2 shrink-0 font-display tracking-wide">
+                    <i class="fa-solid fa-paper-plane text-xs"></i>
+                    <span>新增任務</span>
+                </button>
+                <button type="button" onclick="app.closeAddForm()" title="收合" class="text-cyan-400/60 hover:text-cyan-200 px-3 py-2.5 border border-cyan-500/20 hover:border-cyan-400/50 transition shrink-0">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            </div>
+        </form>
+    </footer>
+
+    <!-- 任務詳情與編輯視窗 -->
+    <div id="task-modal" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+        <div class="relative bg-black/80 backdrop-blur border border-cyan-500/30 w-full max-w-2xl max-h-[90vh] flex flex-col shadow-[0_0_50px_-10px_rgba(34,211,238,0.5)] overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+            <span class="absolute top-0 left-0 w-4 h-4 border-t-2 border-l-2 border-cyan-400 z-10"></span>
+            <span class="absolute top-0 right-0 w-4 h-4 border-t-2 border-r-2 border-cyan-400 z-10"></span>
+            <span class="absolute bottom-0 left-0 w-4 h-4 border-b-2 border-l-2 border-cyan-400 z-10"></span>
+            <span class="absolute bottom-0 right-0 w-4 h-4 border-b-2 border-r-2 border-cyan-400 z-10"></span>
+            <!-- 視窗標頭 -->
+            <div class="px-6 py-4 bg-black/60 border-b border-cyan-500/20 flex items-center justify-between">
+                <div class="flex items-center space-x-3">
+                    <span id="modal-status-pill" class="text-xs px-2.5 py-1 font-medium font-display border">待處理</span>
+                    <h3 class="font-display text-lg font-semibold text-cyan-100 tracking-wide">任務詳情與步驟</h3>
+                </div>
+                <button onclick="app.closeModal()" class="text-cyan-400/60 hover:text-cyan-200 p-1.5 hover:bg-cyan-500/10 transition">
+                    <i class="fa-solid fa-xmark text-lg"></i>
+                </button>
+            </div>
+
+            <!-- 視窗內容 -->
+            <div class="p-6 overflow-y-auto space-y-5 flex-1 custom-scrollbar">
+                <input type="hidden" id="edit-task-id">
+
+                <!-- 標題與優先度 -->
+                <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                    <div class="sm:col-span-2">
+                        <label class="block text-xs font-semibold text-cyan-400/70 uppercase tracking-wider mb-1.5 font-display">任務標題</label>
+                        <input type="text" id="edit-task-title" oninput="app.handleTitleEditInput(this.value)" class="w-full bg-black/60 border border-cyan-500/30 px-3.5 py-2.5 text-slate-100 text-sm focus:outline-none focus:ring-1 focus:ring-cyan-400">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold text-cyan-400/70 uppercase tracking-wider mb-1.5 font-display">優先度</label>
+                        <select id="edit-task-priority" class="w-full bg-black/60 border border-cyan-500/30 px-3 py-2.5 text-slate-100 text-sm focus:outline-none focus:ring-1 focus:ring-cyan-400">
+                            <option value="low">低</option>
+                            <option value="medium">中</option>
+                            <option value="high">高</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- 描述 -->
+                <div>
+                    <label class="block text-xs font-semibold text-cyan-400/70 uppercase tracking-wider mb-1.5 font-display">描述與備註</label>
+                    <textarea id="edit-task-desc" rows="3" placeholder="新增詳細說明、連結或指示……" class="w-full bg-black/60 border border-cyan-500/30 p-3.5 text-slate-100 text-sm focus:outline-none focus:ring-1 focus:ring-cyan-400"></textarea>
+                </div>
+
+                <!-- 到期日與計算後進度 -->
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-xs font-semibold text-cyan-400/70 uppercase tracking-wider mb-1.5 font-display">到期日</label>
+                        <input type="date" id="edit-task-due" class="w-full bg-black/60 border border-cyan-500/30 px-3.5 py-2.5 text-slate-100 text-sm focus:outline-none focus:ring-1 focus:ring-cyan-400">
+                    </div>
+                    <div class="flex flex-col justify-center">
+                        <div class="flex justify-between items-center mb-1.5">
+                            <label class="block text-xs font-semibold text-cyan-400/70 uppercase tracking-wider font-display">計算後進度</label>
+                            <span id="modal-progress-display" class="text-xs font-bold text-cyan-300 font-display">0%</span>
+                        </div>
+                        <div class="w-full bg-black/60 h-2.5 overflow-hidden border border-cyan-500/30">
+                            <div id="modal-progress-bar" class="bg-gradient-to-r from-cyan-500 to-cyan-300 h-full transition-all duration-300 shadow-[0_0_8px_1px_rgba(34,211,238,0.8)]" style="width: 0%"></div>
+                        </div>
+                        <span class="text-[10px] text-cyan-500/50 mt-1">進度會依下方已完成的步驟自動計算。</span>
+                    </div>
+                </div>
+
+                <!-- 步驟清單 -->
+                <div class="bg-black/40 border border-cyan-500/20 p-4">
+                    <div class="flex items-center justify-between mb-3">
+                        <h4 class="text-xs font-semibold text-cyan-300/80 uppercase tracking-wider font-display">行動步驟／子任務</h4>
+                        <span id="steps-counter" class="text-xs text-cyan-400/60 font-display">0/0 已完成</span>
+                    </div>
+                    <div id="steps-list" class="space-y-2 mb-3 max-h-40 overflow-y-auto">
+                        <!-- 動態產生的步驟 -->
+                    </div>
+                    <div class="flex items-center space-x-2">
+                        <input type="text" id="new-step-input" placeholder="新增一個步驟……" onkeydown="if(event.key==='Enter'){event.preventDefault(); app.addStep();}" class="flex-1 bg-black/60 border border-cyan-500/30 px-3 py-2 text-sm text-slate-200 placeholder-cyan-500/30 focus:outline-none focus:ring-1 focus:ring-cyan-400">
+                        <button type="button" onclick="app.addStep()" class="bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-400/50 text-cyan-200 px-4 py-2 text-sm font-medium transition font-display">
+                            <i class="fa-solid fa-plus mr-1"></i> 新增步驟
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 視窗底部 -->
+            <div class="px-6 py-4 bg-black/60 border-t border-cyan-500/20 flex items-center justify-between">
+                <button type="button" onclick="app.deleteCurrentTask()" class="text-rose-400 hover:text-rose-300 text-sm font-medium px-3 py-2 hover:bg-rose-500/10 transition flex items-center space-x-1.5 font-display">
+                    <i class="fa-solid fa-trash-can"></i>
+                    <span>刪除任務</span>
+                </button>
+                <div class="flex items-center space-x-3">
+                    <button type="button" onclick="app.closeModal()" class="px-4 py-2 text-sm font-medium bg-black/40 border border-slate-600/50 hover:border-slate-400/60 text-slate-300 transition font-display">取消</button>
+                    <button type="button" onclick="app.saveTaskDetails()" class="px-5 py-2 text-sm font-medium bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-400/60 text-cyan-200 transition shadow-[0_0_15px_-3px_rgba(34,211,238,0.6)] font-display">儲存變更</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="toast-container" class="fixed top-5 right-5 z-50 flex flex-col space-y-2 pointer-events-none"></div>
+
+    <script src="personal-seed.js"></script>
+    <script>
+        class ActivityTracker {
+            constructor() {
+                this.tasks = [];
+                this.currentEditingId = null;
+                this.tempSteps = [];
+                this.pendingSort = 'default';
+                this.init();
+            }
+
+            init() {
+                this.loadFromStorage();
+                if (this.tasks.length === 0) {
+                    this.loadSampleData();
+                } else {
+                    this.render();
+                }
+                this.importSeedTasks();
+            }
+
+            // 預載待辦：id 不存在才加入；已存在且步驟未動過，則補上拆分後的子步驟
+            importSeedTasks() {
+                const seeds = window.PERSONAL_SEEDS || [];
+                const have = new Map(this.tasks.map(t => [t.id, t]));
+                let changed = false;
+                for (let i = seeds.length - 1; i >= 0; i--) {
+                    const t = seeds[i];
+                    const steps = t.steps.map(x => ({ text: x, done: false }));
+                    const ex = have.get(t.id);
+                    if (ex) {
+                        if (t.rev && ex.seedRev !== t.rev) {
+                            ex.title = t.title; ex.priority = t.priority; ex.steps = steps;
+                            ex.status = 'pending'; ex.seedRev = t.rev; changed = true;
+                            continue;
+                        }
+                        const cur = ex.steps || [];
+                        const untouched = cur.length <= 1 && !(cur[0] && cur[0].done);
+                        if (untouched && cur.length !== steps.length) { ex.steps = steps; changed = true; }
+                        continue;
+                    }
+                    this.tasks.unshift({ id: t.id, title: t.title, description: '', status: 'pending',
+                        priority: t.priority, dueDate: t.dueDate, steps: steps, seedRev: t.rev });
+                    changed = true;
+                }
+                if (changed) this.saveToStorage();
+            }
+
+            openAddForm() {
+                document.getElementById('add-task-trigger-wrap').classList.add('hidden');
+                document.getElementById('add-task-form').classList.remove('hidden');
+                document.getElementById('new-task-title').focus();
+            }
+
+            closeAddForm() {
+                document.getElementById('add-task-form').classList.add('hidden');
+                document.getElementById('add-task-trigger-wrap').classList.remove('hidden');
+            }
+
+            setPendingSort(sortType) {
+                this.pendingSort = sortType;
+                this.render();
+            }
+
+            loadFromStorage() {
+                const saved = localStorage.getItem('taskflow_activities');
+                if (saved) {
+                    try {
+                        this.tasks = JSON.parse(saved);
+                    } catch (e) {
+                        this.tasks = [];
+                    }
+                }
+            }
+
+            saveToStorage() {
+                localStorage.setItem('taskflow_activities', JSON.stringify(this.tasks));
+                this.render();
+            }
+
+            loadSampleData() {
+                this.tasks = [
+                    {
+                        id: 'task-1',
+                        title: 'Design user onboarding flow',
+                        description: 'Create wireframes for the new multi-step onboarding wizard with interactive tooltips.',
+                        status: 'pending',
+                        priority: 'high',
+                        dueDate: '2026-10-20',
+                        steps: [
+                            { text: 'Sketch initial wireframes', done: true },
+                            { text: 'Review feedback with design lead', done: true },
+                            { text: 'Build high-fidelity prototype in Figma', done: false },
+                            { text: 'User testing session', done: false }
+                        ]
+                    },
+                    {
+                        id: 'task-2',
+                        title: 'Clean kitchen and dishes',
+                        description: 'Wash all remaining dinner plates, wipe down countertops, and empty the recycling bin.',
+                        status: 'pending',
+                        priority: 'medium',
+                        dueDate: '2026-10-25',
+                        steps: [
+                            { text: 'Clean kitchen and dishes', done: false }
+                        ]
+                    }
+                ];
+                this.saveToStorage();
+            }
+
+            resetData() {
+                this.loadSampleData();
+                this.showToast('已成功重置為範例資料！', 'info');
+            }
+
+            showToast(message, type = 'success') {
+                const container = document.getElementById('toast-container');
+                const toast = document.createElement('div');
+
+                let bgClass = 'bg-emerald-600/90 text-white border-emerald-400/50';
+                let icon = 'fa-circle-check';
+                if(type === 'info') { bgClass = 'bg-cyan-600/90 text-white border-cyan-400/50'; icon = 'fa-circle-info'; }
+                if(type === 'error') { bgClass = 'bg-rose-600/90 text-white border-rose-400/50'; icon = 'fa-triangle-exclamation'; }
+
+                toast.className = `pointer-events-auto transform transition-all duration-300 translate-y-2 opacity-0 ${bgClass} px-4 py-3 border shadow-[0_0_20px_-4px_rgba(0,0,0,0.6)] flex items-center space-x-3 text-sm font-medium font-display`;
+                toast.innerHTML = `<i class="fa-solid ${icon}"></i><span>${message}</span>`;
+
+                container.appendChild(toast);
+                setTimeout(() => {
+                    toast.classList.remove('translate-y-2', 'opacity-0');
+                }, 10);
+
+                setTimeout(() => {
+                    toast.classList.add('translate-y-2', 'opacity-0');
+                    setTimeout(() => toast.remove(), 300);
+                }, 3000);
+            }
+
+            calculateProgress(steps) {
+                if (!steps || steps.length === 0) return 0;
+                const completed = steps.filter(s => s.done).length;
+                return Math.round((completed / steps.length) * 100);
+            }
+
+            handleAddTask(e) {
+                e.preventDefault();
+                const titleInput = document.getElementById('new-task-title');
+                const priorityInput = document.getElementById('new-task-priority');
+                const dueInput = document.getElementById('new-task-due');
+
+                const title = titleInput.value.trim();
+                if(!title) return;
+
+                // 需求：未明確新增步驟時，預設步驟內容與任務標題相同
+                const newTask = {
+                    id: 'task-' + Date.now(),
+                    title: title,
+                    description: '',
+                    status: 'pending',
+                    priority: priorityInput.value,
+                    dueDate: dueInput.value || new Date().toISOString().split('T')[0],
+                    steps: [
+                        { text: title, done: false }
+                    ]
+                };
+
+                this.tasks.unshift(newTask);
+                this.saveToStorage();
+
+                titleInput.value = '';
+                this.closeAddForm();
+                this.showToast('活動新增成功！');
+            }
+
+            toggleStatus(id) {
+                const task = this.tasks.find(t => t.id === id);
+                if(task) {
+                    if(task.status === 'pending') {
+                        // 將所有步驟標記為完成 -> 100% -> 移至已完成
+                        task.steps.forEach(s => s.done = true);
+                        task.status = 'completed';
+                        this.showToast('活動已標記為完成！🎉');
+                    } else {
+                        // 取消所有步驟勾選，移回待處理
+                        task.steps.forEach(s => s.done = false);
+                        task.status = 'pending';
+                        this.showToast('活動已移回待處理。');
+                    }
+                    this.saveToStorage();
+                }
+            }
+
+            deleteTask(id) {
+                this.tasks = this.tasks.filter(t => t.id !== id);
+                this.saveToStorage();
+                this.showToast('活動已刪除。', 'info');
+                this.closeModal();
+            }
+
+            deleteCurrentTask() {
+                if(this.currentEditingId) {
+                    this.deleteTask(this.currentEditingId);
+                }
+            }
+
+            openModal(id) {
+                const task = this.tasks.find(t => t.id === id);
+                if(!task) return;
+
+                this.currentEditingId = id;
+                this.tempSteps = JSON.parse(JSON.stringify(task.steps || []));
+
+                document.getElementById('edit-task-id').value = task.id;
+                document.getElementById('edit-task-title').value = task.title;
+                document.getElementById('edit-task-desc').value = task.description || '';
+                document.getElementById('edit-task-priority').value = task.priority || 'medium';
+                document.getElementById('edit-task-due').value = task.dueDate || '';
+
+                this.renderModalSteps();
+                document.getElementById('task-modal').classList.remove('hidden');
+            }
+
+            closeModal() {
+                document.getElementById('task-modal').classList.add('hidden');
+                this.currentEditingId = null;
+                this.tempSteps = [];
+            }
+
+            handleTitleEditInput(newTitle) {
+                // 若只有 1 個步驟且內容與原標題相同，或想同步預設步驟文字：
+                // 可選的增強功能：使用者更新標題時，不強制覆寫自訂步驟，但保留此彈性。
+            }
+
+            addStep() {
+                const input = document.getElementById('new-step-input');
+                const val = input.value.trim();
+                if(!val) return;
+
+                this.tempSteps.push({ text: val, done: false });
+                input.value = '';
+                this.renderModalSteps();
+            }
+
+            toggleTempStep(index) {
+                this.tempSteps[index].done = !this.tempSteps[index].done;
+                this.renderModalSteps();
+            }
+
+            removeTempStep(index) {
+                this.tempSteps.splice(index, 1);
+                this.renderModalSteps();
+            }
+
+            renderModalSteps() {
+                const list = document.getElementById('steps-list');
+                const counter = document.getElementById('steps-counter');
+                const progressDisplay = document.getElementById('modal-progress-display');
+                const progressBar = document.getElementById('modal-progress-bar');
+                const statusPill = document.getElementById('modal-status-pill');
+
+                const completedCount = this.tempSteps.filter(s => s.done).length;
+                const totalSteps = this.tempSteps.length;
+                const currentProgress = this.calculateProgress(this.tempSteps);
+
+                counter.textContent = `${completedCount}/${totalSteps} 已完成`;
+                progressDisplay.textContent = currentProgress + '%';
+                progressBar.style.width = currentProgress + '%';
+
+                if(currentProgress === 100 && totalSteps > 0) {
+                    statusPill.className = 'text-xs px-2.5 py-1 font-medium font-display border bg-emerald-500/10 text-emerald-300 border-emerald-400/50';
+                    statusPill.textContent = '已完成（100%）';
+                } else {
+                    statusPill.className = 'text-xs px-2.5 py-1 font-medium font-display border bg-amber-500/10 text-amber-300 border-amber-400/50';
+                    statusPill.textContent = `待處理（${currentProgress}%）`;
+                }
+
+                if(totalSteps === 0) {
+                    list.innerHTML = `<p class="text-xs text-cyan-500/40 italic py-2 text-center font-display">尚未新增任何行動步驟。請新增步驟，否則進度將為 0%。</p>`;
+                    return;
+                }
+
+                list.innerHTML = this.tempSteps.map((step, idx) => `
+                    <div class="flex items-center justify-between bg-black/40 border border-cyan-500/20 px-3 py-2 text-sm">
+                        <label class="flex items-center space-x-2.5 flex-1 cursor-pointer select-none">
+                            <input type="checkbox" ${step.done ? 'checked' : ''} onchange="app.toggleTempStep(${idx})" class="w-4 h-4 bg-black/60 border-cyan-500/40 text-cyan-500 focus:ring-cyan-400 accent-cyan-500">
+                            <span class="${step.done ? 'line-through text-slate-500' : 'text-slate-200'}">${escapeHtml(step.text)}</span>
+                        </label>
+                        <button type="button" onclick="app.removeTempStep(${idx})" class="text-cyan-500/40 hover:text-rose-400 p-1 transition">
+                            <i class="fa-solid fa-xmark"></i>
+                        </button>
+                    </div>
+                `).join('');
+            }
+
+            saveTaskDetails() {
+                if(!this.currentEditingId) return;
+
+                const task = this.tasks.find(t => t.id === this.currentEditingId);
+                if(!task) return;
+
+                task.title = document.getElementById('edit-task-title').value.trim() || '未命名活動';
+                task.description = document.getElementById('edit-task-desc').value.trim();
+                task.priority = document.getElementById('edit-task-priority').value;
+                task.dueDate = document.getElementById('edit-task-due').value;
+                task.steps = [...this.tempSteps];
+
+                // 依步驟進度自動判斷狀態（100% = 已完成，<100% = 待處理）
+                const prog = this.calculateProgress(task.steps);
+                if(prog === 100 && task.steps.length > 0) {
+                    task.status = 'completed';
+                } else {
+                    task.status = 'pending';
+                }
+
+                this.saveToStorage();
+                this.closeModal();
+                this.showToast('變更已成功儲存！');
+            }
+
+            render() {
+                const pendingList = document.getElementById('pending-list');
+                const completedList = document.getElementById('completed-list');
+
+                // 渲染前先依步驟進度自動更新所有任務的狀態
+                this.tasks.forEach(task => {
+                    const prog = this.calculateProgress(task.steps);
+                    if(prog === 100 && task.steps && task.steps.length > 0) {
+                        task.status = 'completed';
+                    } else if(prog < 100 && task.status === 'completed') {
+                        task.status = 'pending';
+                    }
+                });
+
+                let pendingTasks = this.tasks.filter(t => t.status === 'pending');
+                const completedTasks = this.tasks.filter(t => t.status === 'completed');
+
+                // 依據待處理任務所選排序方式套用排序邏輯
+                const priorityWeight = { high: 3, medium: 2, low: 1 };
+                if (this.pendingSort === 'priority-desc') {
+                    pendingTasks.sort((a, b) => (priorityWeight[b.priority] || 2) - (priorityWeight[a.priority] || 2));
+                } else if (this.pendingSort === 'due-date') {
+                    pendingTasks.sort((a, b) => {
+                        if (!a.dueDate) return 1;
+                        if (!b.dueDate) return -1;
+                        return a.dueDate.localeCompare(b.dueDate);
+                    });
+                } else if (this.pendingSort === 'progress-desc') {
+                    pendingTasks.sort((a, b) => this.calculateProgress(b.steps) - this.calculateProgress(a.steps));
+                }
+
+                document.getElementById('pending-count').textContent = `${pendingTasks.length} 待處理`;
+                document.getElementById('completed-count').textContent = `${completedTasks.length} 已完成`;
+                document.getElementById('pending-badge').textContent = pendingTasks.length;
+                document.getElementById('completed-badge').textContent = completedTasks.length;
+
+                // 渲染待處理
+                if(pendingTasks.length === 0) {
+                    pendingList.innerHTML = `
+                        <div class="h-48 flex flex-col items-center justify-center text-cyan-500/30 text-center p-6 font-display">
+                            <i class="fa-regular fa-face-smile text-3xl mb-2 opacity-50"></i>
+                            <p class="text-sm font-medium text-cyan-400/50">目前沒有待處理任務！</p>
+                            <p class="text-xs text-cyan-600/30 mt-1">使用下方的輸入列新增任務。</p>
+                        </div>
+                    `;
+                } else {
+                    pendingList.innerHTML = pendingTasks.map(task => this.renderTaskCard(task)).join('');
+                }
+
+                // 渲染已完成
+                if(completedTasks.length === 0) {
+                    completedList.innerHTML = `
+                        <div class="h-48 flex flex-col items-center justify-center text-cyan-500/30 text-center p-6 font-display">
+                            <i class="fa-regular fa-clipboard text-3xl mb-2 opacity-50"></i>
+                            <p class="text-sm font-medium text-cyan-400/50">尚無已完成任務。</p>
+                            <p class="text-xs text-cyan-600/30 mt-1">已完成的項目會顯示在這裡。</p>
+                        </div>
+                    `;
+                } else {
+                    completedList.innerHTML = completedTasks.map(task => this.renderTaskCard(task)).join('');
+                }
+            }
+
+            renderTaskCard(task) {
+                const priorityColors = {
+                    high: 'bg-rose-500/10 text-rose-300 border-rose-400/40',
+                    medium: 'bg-amber-500/10 text-amber-300 border-amber-400/40',
+                    low: 'bg-cyan-500/10 text-cyan-300 border-cyan-400/40'
+                };
+
+                const isCompleted = task.status === 'completed';
+                const completedSteps = (task.steps || []).filter(s => s.done).length;
+                const totalSteps = (task.steps || []).length;
+                const progress = this.calculateProgress(task.steps);
+
+                const priorityLabels = { high: '高', medium: '中', low: '低' };
+
+                return `
+                    <div class="group relative bg-black/40 hover:bg-black/60 border border-cyan-500/15 hover:border-cyan-400/40 p-4 transition shadow-[0_0_15px_-8px_rgba(34,211,238,0.4)] flex flex-col space-y-3">
+                        <div class="flex items-start justify-between gap-3">
+                            <div class="flex items-start space-x-3 flex-1 min-w-0">
+                                <button onclick="app.toggleStatus('${task.id}')" title="${isCompleted ? '標記為未完成' : '將所有步驟標記為完成'}" class="mt-1 w-5 h-5 rounded-full border-2 ${isCompleted ? 'bg-emerald-500/80 border-emerald-400 text-white shadow-[0_0_8px_1px_rgba(52,211,153,0.6)]' : 'border-cyan-500/40 hover:border-emerald-400 bg-black/40'} flex items-center justify-center text-xs transition shrink-0">
+                                    ${isCompleted ? '<i class="fa-solid fa-check text-[10px]"></i>' : ''}
+                                </button>
+                                <div class="flex-1 min-w-0 cursor-pointer" onclick="app.openModal('${task.id}')">
+                                    <h3 class="font-medium text-slate-200 text-sm truncate group-hover:text-cyan-300 transition ${isCompleted ? 'line-through text-slate-500' : ''}">${escapeHtml(task.title)}</h3>
+                                    ${task.description ? `<p class="text-xs text-slate-400 line-clamp-1 mt-0.5">${escapeHtml(task.description)}</p>` : ''}
+                                </div>
+                            </div>
+                            <span class="text-[10px] px-2 py-0.5 uppercase font-semibold border font-display tracking-wider ${priorityColors[task.priority] || priorityColors.medium}">${priorityLabels[task.priority] || task.priority}</span>
+                        </div>
+
+                        <!-- 以步驟為基礎的進度條 -->
+                        <div class="space-y-1.5 cursor-pointer" onclick="app.openModal('${task.id}')">
+                            <div class="flex justify-between text-xs text-cyan-500/50 font-display">
+                                <span>進度（${completedSteps}/${totalSteps} 步驟）</span>
+                                <span class="font-medium text-cyan-300">${progress}%</span>
+                            </div>
+                            <div class="w-full bg-black/50 h-1.5 overflow-hidden border border-cyan-500/20">
+                                <div class="bg-gradient-to-r from-cyan-500 to-cyan-300 h-full transition-all duration-300 shadow-[0_0_6px_1px_rgba(34,211,238,0.6)]" style="width: ${progress}%"></div>
+                            </div>
+                        </div>
+
+                        <!-- 底部資訊：到期日與編輯按鈕 -->
+                        <div class="flex items-center justify-between text-xs text-cyan-500/40 pt-1 border-t border-cyan-500/10">
+                            <div class="flex items-center space-x-3">
+                                ${task.dueDate ? `
+                                    <span class="flex items-center space-x-1 font-display">
+                                        <i class="fa-regular fa-calendar text-[11px]"></i>
+                                        <span>${task.dueDate}</span>
+                                    </span>
+                                ` : ''}
+                            </div>
+                            <button onclick="app.openModal('${task.id}')" class="text-cyan-400 hover:text-cyan-200 font-medium flex items-center space-x-1 bg-cyan-500/5 hover:bg-cyan-500/15 border border-cyan-500/20 px-2.5 py-1 transition font-display">
+                                <i class="fa-solid fa-pen text-[10px]"></i>
+                                <span>編輯步驟與詳情</span>
+                            </button>
+                        </div>
+                    </div>
+                `;
+            }
+        }
+
+        function escapeHtml(str) {
+            if (!str) return '';
+            return str.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;').replace("'", '&#039;');
+        }
+
+        // 初始化應用程式實例
+        const app = new ActivityTracker();
+    </script>
+</body>
+</html>
