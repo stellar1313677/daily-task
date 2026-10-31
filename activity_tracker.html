@@ -324,6 +324,9 @@
                     <span class="w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_8px_2px_rgba(52,211,153,0.7)] animate-pulse"></span>
                     <span id="completed-count" class="font-medium text-emerald-200 tracking-wide">0 已完成</span>
                 </div>
+                <button id="data-file-btn" onclick="app.linkDataFile()" title="把任務存成資料夾裡的 tasks.json" class="flex items-center gap-1.5 text-cyan-400/70 hover:text-cyan-200 text-xs px-2.5 py-1.5 border border-cyan-500/30 hover:border-cyan-400/70 bg-black/40 hover:bg-cyan-500/10 transition font-display tracking-wide">
+                    <i class="fa-solid fa-file-code"></i><span id="data-file-label" class="hidden sm:inline">存到檔案</span>
+                </button>
                 <button onclick="app.resetData()" title="重置範例資料" class="text-cyan-400/70 hover:text-cyan-200 text-xs px-2.5 py-1.5 border border-cyan-500/30 hover:border-cyan-400/70 bg-black/40 hover:bg-cyan-500/10 transition font-display tracking-wide">
                     <i class="fa-solid fa-rotate-right"></i>
                 </button>
@@ -509,8 +512,36 @@
 
     <div id="toast-container" class="fixed top-5 right-5 z-50 flex flex-col space-y-2 pointer-events-none"></div>
 
-    <script src="personal-seed.js"></script>
     <script>
+        // 小型 IndexedDB 存取：記住使用者選的資料夾，下次開啟不用重選
+        const kv = {
+            open() {
+                return new Promise((res, rej) => {
+                    const r = indexedDB.open('taskflow', 1);
+                    r.onupgradeneeded = () => r.result.createObjectStore('kv');
+                    r.onsuccess = () => res(r.result);
+                    r.onerror = () => rej(r.error);
+                });
+            },
+            async get(key) {
+                const db = await this.open();
+                return new Promise((res, rej) => {
+                    const r = db.transaction('kv').objectStore('kv').get(key);
+                    r.onsuccess = () => res(r.result);
+                    r.onerror = () => rej(r.error);
+                });
+            },
+            async set(key, value) {
+                const db = await this.open();
+                return new Promise((res, rej) => {
+                    const t = db.transaction('kv', 'readwrite');
+                    t.objectStore('kv').put(value, key);
+                    t.oncomplete = () => res();
+                    t.onerror = () => rej(t.error);
+                });
+            }
+        };
+
         class ActivityTracker {
             constructor() {
                 this.tasks = [];
@@ -527,34 +558,126 @@
                 } else {
                     this.render();
                 }
-                this.importSeedTasks();
+                this.restoreDataFile();
             }
 
-            // 預載待辦：id 不存在才加入；已存在且步驟未動過，則補上拆分後的子步驟
-            importSeedTasks() {
-                const seeds = window.PERSONAL_SEEDS || [];
-                const have = new Map(this.tasks.map(t => [t.id, t]));
-                let changed = false;
-                for (let i = seeds.length - 1; i >= 0; i--) {
-                    const t = seeds[i];
-                    const steps = t.steps.map(x => ({ text: x, done: false }));
-                    const ex = have.get(t.id);
-                    if (ex) {
-                        if (t.rev && ex.seedRev !== t.rev) {
-                            ex.title = t.title; ex.priority = t.priority; ex.steps = steps;
-                            ex.status = 'pending'; ex.seedRev = t.rev; changed = true;
-                            continue;
-                        }
-                        const cur = ex.steps || [];
-                        const untouched = cur.length <= 1 && !(cur[0] && cur[0].done);
-                        if (untouched && cur.length !== steps.length) { ex.steps = steps; changed = true; }
-                        continue;
-                    }
-                    this.tasks.unshift({ id: t.id, title: t.title, description: '', status: 'pending',
-                        priority: t.priority, dueDate: t.dueDate, steps: steps, seedRev: t.rev });
-                    changed = true;
+            // ── JSON 資料檔：任務存在使用者選的資料夾裡的 tasks.json，AI 可直接讀寫 ──
+            async restoreDataFile() {
+                this.dataFileWrite = Promise.resolve();
+                if (!window.showDirectoryPicker) return this.updateDataFileButton();
+                try {
+                    this.dataDir = await kv.get('dataDir');
+                } catch (e) {
+                    this.dataDir = null;
                 }
-                if (changed) this.saveToStorage();
+                if (this.dataDir && await this.dataDir.queryPermission({ mode: 'readwrite' }) === 'granted') {
+                    await this.attachDataFile();
+                }
+                this.updateDataFileButton();
+                setInterval(() => this.pollDataFile(), 2000);
+                window.addEventListener('focus', () => this.pollDataFile());
+            }
+
+            async linkDataFile() {
+                if (!window.showDirectoryPicker) {
+                    this.showToast('這個瀏覽器不支援存到檔案，請用 Chrome 或 Edge。', 'error');
+                    return;
+                }
+                try {
+                    // 已記住資料夾但權限過期：點一下重新授權；否則選一個資料夾
+                    if (this.dataDir && !this.dataFile &&
+                        await this.dataDir.requestPermission({ mode: 'readwrite' }) === 'granted') {
+                        await this.attachDataFile();
+                    } else {
+                        const dir = await window.showDirectoryPicker({ id: 'taskflow', mode: 'readwrite' });
+                        this.dataDir = dir;
+                        this.dataFile = null;
+                        await this.attachDataFile();
+                        await kv.set('dataDir', dir);
+                    }
+                    if (this.dataFile) this.showToast(`已連結 ${this.dataDir.name}/tasks.json`);
+                } catch (e) {
+                    if (e.name !== 'AbortError') this.showToast('無法連結資料夾：' + e.message, 'error');
+                }
+                this.updateDataFileButton();
+            }
+
+            // 檔案有內容就讀進來；是新檔就把目前的任務寫進去
+            async attachDataFile() {
+                const handle = await this.dataDir.getFileHandle('tasks.json', { create: true });
+                const text = await (await handle.getFile()).text();
+                if (text.trim()) {
+                    const tasks = this.parseTasks(text);
+                    if (!tasks) {
+                        this.showToast('tasks.json 格式不正確，未載入。', 'error');
+                        return;
+                    }
+                    this.dataFile = handle;
+                    this.dataFileText = text;
+                    this.tasks = tasks;
+                    localStorage.setItem('taskflow_activities', JSON.stringify(this.tasks));
+                    this.render();
+                } else {
+                    this.dataFile = handle;
+                    this.writeDataFile();
+                }
+            }
+
+            parseTasks(text) {
+                try {
+                    const data = JSON.parse(text);
+                    const tasks = Array.isArray(data) ? data : data.tasks;
+                    return Array.isArray(tasks) ? tasks : null;
+                } catch (e) {
+                    return null;
+                }
+            }
+
+            writeDataFile() {
+                if (!this.dataFile) return;
+                const text = JSON.stringify(this.tasks, null, 2) + '\n';
+                this.dataFileText = text;
+                this.dataFileWrite = this.dataFileWrite.then(async () => {
+                    const w = await this.dataFile.createWritable();
+                    await w.write(text);
+                    await w.close();
+                }).catch(e => this.showToast('寫入 tasks.json 失敗：' + e.message, 'error'));
+            }
+
+            // 檔案被外部（例如 AI）改過就重新載入
+            async pollDataFile() {
+                if (!this.dataFile || document.hidden) return;
+                try {
+                    await this.dataFileWrite;
+                    const text = await (await this.dataFile.getFile()).text();
+                    if (text === this.dataFileText) return;
+                    const tasks = this.parseTasks(text);
+                    if (!tasks) return;
+                    this.dataFileText = text;
+                    this.tasks = tasks;
+                    localStorage.setItem('taskflow_activities', JSON.stringify(this.tasks));
+                    this.render();
+                } catch (e) {
+                    // 檔案暫時無法讀取（被移動或權限收回）時略過
+                }
+            }
+
+            updateDataFileButton() {
+                const btn = document.getElementById('data-file-btn');
+                const label = document.getElementById('data-file-label');
+                btn.classList.remove('text-emerald-300', 'border-emerald-400/50', 'text-amber-300', 'border-amber-400/50');
+                if (this.dataFile) {
+                    label.textContent = 'tasks.json';
+                    btn.title = `任務存在 ${this.dataDir.name}/tasks.json（點擊可換資料夾）`;
+                    btn.classList.add('text-emerald-300', 'border-emerald-400/50');
+                } else if (this.dataDir) {
+                    label.textContent = '重新連結';
+                    btn.title = `點擊以繼續使用 ${this.dataDir.name}/tasks.json`;
+                    btn.classList.add('text-amber-300', 'border-amber-400/50');
+                } else {
+                    label.textContent = '存到檔案';
+                    btn.title = '把任務存成資料夾裡的 tasks.json';
+                }
             }
 
             openAddForm() {
@@ -586,6 +709,7 @@
 
             saveToStorage() {
                 localStorage.setItem('taskflow_activities', JSON.stringify(this.tasks));
+                this.writeDataFile();
                 this.render();
             }
 
