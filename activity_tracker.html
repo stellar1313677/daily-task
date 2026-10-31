@@ -745,6 +745,8 @@
             }
 
             resetData() {
+                const where = this.dataFile ? '（tasks.json 也會被覆蓋）' : '';
+                if (!confirm(`確定要重置為範例資料嗎？目前所有任務都會被清除${where}，無法復原。`)) return;
                 this.loadSampleData();
                 this.showToast('已成功重置為範例資料！', 'info');
             }
